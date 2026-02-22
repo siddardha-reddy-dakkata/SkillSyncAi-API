@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Smart Campus Assistant",
+    "description": "We need a React frontend, Node.js backend with REST APIs, and an ML model for predicting campus facility usage. Docker deployment required.",
+    "team_size": 4
+  },
+  {
+    "name": "Health Data Dashboard",
+    "description": "Build a data visualization dashboard using Python, pandas, and Plotly. Backend with Flask and PostgreSQL. UI/UX design needed.",
+    "team_size": 4
+  },
+  {
+    "name": "E-Commerce Platform",
+    "description": "Full-stack e-commerce with React frontend, Express.js backend, MongoDB database, Docker deployment, and payment integration.",
+    "team_size": 5
+  }
+]
