@@ -5,14 +5,60 @@ API for team formation based on resume parsing and skill matching.
 
 import os
 import json
-import tempfile
+import asyncio
+import httpx
 from typing import List, Optional
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ml_engine import process_team_formation
+
+# ============================================================
+# Keep-Alive Background Task (prevents Render free tier sleep)
+# ============================================================
+
+KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL", "")  # Set by Render automatically
+KEEP_ALIVE_INTERVAL = 14 * 60  # 14 minutes (Render sleeps after 15 mins)
+
+
+async def keep_alive_task():
+    """Ping the health endpoint periodically to keep the server awake."""
+    await asyncio.sleep(60)  # Wait 1 minute before starting
+    
+    while True:
+        try:
+            if KEEP_ALIVE_URL:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(f"{KEEP_ALIVE_URL}/health", timeout=30)
+                    print(f"[Keep-Alive] Pinged {KEEP_ALIVE_URL}/health - Status: {response.status_code}")
+            else:
+                print("[Keep-Alive] No RENDER_EXTERNAL_URL set, skipping ping")
+        except Exception as e:
+            print(f"[Keep-Alive] Error: {e}")
+        
+        await asyncio.sleep(KEEP_ALIVE_INTERVAL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events."""
+    # Startup: Start keep-alive task
+    keep_alive = asyncio.create_task(keep_alive_task())
+    print("[Startup] Keep-alive task started")
+    
+    yield
+    
+    # Shutdown: Cancel keep-alive task
+    keep_alive.cancel()
+    try:
+        await keep_alive
+    except asyncio.CancelledError:
+        pass
+    print("[Shutdown] Keep-alive task stopped")
+
 
 # ============================================================
 # FastAPI App Setup
@@ -22,6 +68,7 @@ app = FastAPI(
     title="SkillSyncAI API",
     description="AI-powered team formation based on resume skill extraction",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware - adjust origins for your frontend
