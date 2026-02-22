@@ -14,6 +14,7 @@ ACADEMIC TECHNIQUES DEMONSTRATED:
 - Cosine Similarity for text matching
 - Feature Engineering (skill vectors, experience encoding)
 - Greedy optimization with constraint satisfaction
+- Hungarian Algorithm for optimal assignment (globally optimal)
 """
 
 import os
@@ -23,6 +24,15 @@ import numpy as np
 from collections import defaultdict, Counter
 from typing import Dict, List, Optional, Tuple
 import pdfplumber
+
+# For Hungarian Algorithm (optimal assignment)
+try:
+    from scipy.optimize import linear_sum_assignment
+    HUNGARIAN_AVAILABLE = True
+except ImportError:
+    HUNGARIAN_AVAILABLE = False
+    print("⚠️ scipy not installed - Hungarian Algorithm unavailable")
+    print("   Install with: pip install scipy")
 
 # ============================================================
 # TRY TO IMPORT SENTENCE TRANSFORMERS (fallback to basic if not available)
@@ -569,6 +579,276 @@ class OptimizedTeamFormer:
 
 
 # ============================================================
+# HUNGARIAN ALGORITHM TEAM FORMATION (Globally Optimal)
+# ============================================================
+
+class HungarianTeamFormer:
+    """
+    Uses Hungarian Algorithm for globally optimal team assignment.
+    
+    The Hungarian Algorithm (Kuhn-Munkres) solves the assignment problem
+    in O(n³) time complexity, finding the optimal assignment that:
+    - Minimizes total cost (or maximizes total score)
+    - Guarantees global optimum (unlike greedy Snake Draft)
+    
+    How it works:
+    1. Create cost matrix: students (rows) × team slots (columns)
+    2. Cost = negative match score (Hungarian minimizes)
+    3. Algorithm finds optimal 1-to-1 assignment
+    4. Each student assigned to exactly one slot
+    
+    Academic Reference:
+    - Kuhn, H.W. (1955) "The Hungarian Method for the assignment problem"
+    - Time Complexity: O(n³)
+    - Space Complexity: O(n²)
+    """
+    
+    def __init__(self):
+        self.skill_extractor = HybridSkillExtractor()
+    
+    def form_teams_optimal(
+        self,
+        profiles: List[Dict],
+        target_team_size: int = 4,
+        balance_weight: float = 0.3,
+    ) -> Tuple[List[Dict], Dict]:
+        """
+        Form teams using Hungarian Algorithm for optimal assignment.
+        
+        Args:
+            profiles: List of student profiles with skills
+            target_team_size: Target members per team
+            balance_weight: Weight for team balance vs individual fit (0-1)
+        
+        Returns:
+            Tuple of (teams, metrics)
+        """
+        if not profiles:
+            return [], {}
+        
+        if not HUNGARIAN_AVAILABLE:
+            print("⚠️ Falling back to Snake Draft (scipy not installed)")
+            fallback = OptimizedTeamFormer()
+            return fallback.form_teams(profiles, target_team_size)
+        
+        n_students = len(profiles)
+        team_sizes = self._calculate_team_sizes(n_students, target_team_size)
+        n_teams = len(team_sizes)
+        total_slots = sum(team_sizes)
+        
+        # Add computed scores to profiles
+        for profile in profiles:
+            profile["_score"] = self._calculate_student_score(profile)
+        
+        # Build cost matrix: students × slots
+        # Slots are organized as: [team0_slot0, team0_slot1, ..., team1_slot0, ...]
+        cost_matrix = self._build_cost_matrix(
+            profiles, team_sizes, n_teams, balance_weight
+        )
+        
+        # Run Hungarian Algorithm
+        row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        
+        # Build teams from assignment
+        teams = self._build_teams_from_assignment(
+            profiles, team_sizes, n_teams, row_indices, col_indices
+        )
+        
+        # Calculate metrics
+        metrics = TeamFormationMetrics.generate_quality_report(teams, profiles)
+        metrics["algorithm"] = "hungarian"
+        metrics["optimality"] = "global"
+        
+        return teams, metrics
+    
+    def _build_cost_matrix(
+        self,
+        profiles: List[Dict],
+        team_sizes: List[int],
+        n_teams: int,
+        balance_weight: float,
+    ) -> np.ndarray:
+        """
+        Build the cost matrix for Hungarian Algorithm.
+        
+        Cost = -score (since Hungarian minimizes, we negate to maximize)
+        
+        Includes:
+        - Student skill score (how good they are)
+        - Role diversity bonus (prefer diverse teams)
+        - Balance penalty (prefer similar strength across teams)
+        """
+        n_students = len(profiles)
+        total_slots = sum(team_sizes)
+        
+        # Pad if needed (slots > students or students > slots)
+        matrix_size = max(n_students, total_slots)
+        cost_matrix = np.zeros((matrix_size, matrix_size))
+        
+        # Map slot index to (team_index, position_in_team)
+        slot_to_team = []
+        for team_idx, size in enumerate(team_sizes):
+            for pos in range(size):
+                slot_to_team.append((team_idx, pos))
+        
+        # Fill in costs
+        for student_idx, profile in enumerate(profiles):
+            student_score = profile.get("_score", 0)
+            student_role = profile.get("primary_role", "backend")
+            
+            for slot_idx in range(total_slots):
+                team_idx, position = slot_to_team[slot_idx]
+                
+                # Base score (negated because Hungarian minimizes)
+                base_cost = -student_score * 10
+                
+                # Role diversity bonus: prefer different roles in same team
+                # This is approximated since we don't know final team yet
+                role_bonus = self._estimate_role_diversity_bonus(
+                    student_role, position, team_sizes[team_idx]
+                )
+                
+                # Position bonus: stronger students should be spread across teams
+                # First positions in each team get high-score students
+                position_factor = 1.0 - (position / max(team_sizes[team_idx], 1)) * balance_weight
+                
+                cost_matrix[student_idx, slot_idx] = base_cost * position_factor - role_bonus
+        
+        # Fill dummy rows/cols with high cost (will be unassigned)
+        DUMMY_COST = 1000
+        for i in range(n_students, matrix_size):
+            cost_matrix[i, :] = DUMMY_COST
+        for j in range(total_slots, matrix_size):
+            cost_matrix[:, j] = DUMMY_COST
+        
+        return cost_matrix
+    
+    def _estimate_role_diversity_bonus(self, role: str, position: int, team_size: int) -> float:
+        """
+        Estimate diversity bonus for role at position.
+        Earlier positions get more bonus since they set the team's foundation.
+        """
+        role_priorities = {
+            "backend": [0, 4],      # Backend good at positions 0, 4
+            "frontend": [1, 5],     # Frontend good at positions 1, 5
+            "ml": [2],              # ML at position 2
+            "data": [2, 3],         # Data at positions 2, 3
+            "fullstack": [0, 1],    # Fullstack flexible
+            "uiux": [3],            # UI/UX at position 3
+            "devops": [3, 4],       # DevOps at later positions
+        }
+        
+        preferred_positions = role_priorities.get(role, [0])
+        if position in preferred_positions:
+            return 2.0  # Bonus for preferred position
+        return 0.5  # Small bonus anyway
+    
+    def _build_teams_from_assignment(
+        self,
+        profiles: List[Dict],
+        team_sizes: List[int],
+        n_teams: int,
+        row_indices: np.ndarray,
+        col_indices: np.ndarray,
+    ) -> List[Dict]:
+        """
+        Build team objects from Hungarian assignment.
+        """
+        # Initialize teams
+        teams = [
+            {
+                "team_id": f"Team_{i+1:02d}",
+                "team_name": f"Team {i+1}",
+                "target_size": size,
+                "members": [],
+                "roles_filled": set(),
+                "total_score": 0.0,
+            }
+            for i, size in enumerate(team_sizes)
+        ]
+        
+        # Map slot index to team
+        slot_to_team = []
+        for team_idx, size in enumerate(team_sizes):
+            for _ in range(size):
+                slot_to_team.append(team_idx)
+        
+        total_slots = sum(team_sizes)
+        
+        # Assign based on Hungarian result
+        for student_idx, slot_idx in zip(row_indices, col_indices):
+            # Skip dummy assignments
+            if student_idx >= len(profiles) or slot_idx >= total_slots:
+                continue
+            
+            profile = profiles[student_idx]
+            team_idx = slot_to_team[slot_idx]
+            team = teams[team_idx]
+            
+            member = {
+                "student_id": profile["student_id"],
+                "name": profile["name"],
+                "assigned_role": profile.get("primary_role", "backend"),
+                "primary_role": profile.get("primary_role", "backend"),
+                "overall_score": profile.get("_score", 0),
+                "experience_score": profile.get("experience_score", 0),
+                "skill_scores": profile.get("skills", {}),
+                "top_skills": profile.get("top_skills", [])[:5],
+            }
+            
+            team["members"].append(member)
+            team["roles_filled"].add(profile.get("primary_role", "backend"))
+            team["total_score"] += profile.get("_score", 0)
+        
+        # Calculate balance scores
+        for team in teams:
+            team["balance_score"] = self._calculate_team_balance_score(team)
+            team["roles_filled"] = list(team["roles_filled"])
+        
+        return teams
+    
+    def _calculate_student_score(self, profile: Dict) -> float:
+        """Calculate overall student score."""
+        max_skill = max(profile.get("skills", {}).values()) if profile.get("skills") else 0
+        exp_score = profile.get("experience_score", 0) / 5.0
+        diversity = profile.get("skill_diversity", 0)
+        
+        return round(0.5 * (max_skill / 10.0) + 0.35 * exp_score + 0.15 * diversity, 4)
+    
+    def _calculate_team_sizes(self, total: int, target: int) -> List[int]:
+        """Calculate optimal team sizes."""
+        if total <= 0:
+            return []
+        
+        n_teams = max(1, math.ceil(total / target))
+        base = total // n_teams
+        remainder = total % n_teams
+        
+        return [base + 1 if i < remainder else base for i in range(n_teams)]
+    
+    def _calculate_team_balance_score(self, team: Dict) -> Dict:
+        """Calculate team balance metrics."""
+        members = team.get("members", [])
+        if not members:
+            return {"average_score": 0, "role_diversity": 0, "overall_balance": 0}
+        
+        scores = [m.get("overall_score", 0) for m in members]
+        avg = sum(scores) / len(scores)
+        variance = sum((s - avg) ** 2 for s in scores) / len(scores)
+        
+        role_diversity = len(team.get("roles_filled", set())) / len(members)
+        
+        balance = 0.35 * avg + 0.35 * (1 - min(variance * 10, 1)) + 0.30 * role_diversity
+        
+        return {
+            "average_score": round(avg, 3),
+            "score_variance": round(variance, 4),
+            "role_diversity": round(role_diversity, 2),
+            "overall_balance": round(balance, 3),
+        }
+
+
+# ============================================================
 # USAGE EXAMPLE
 # ============================================================
 
@@ -577,6 +857,7 @@ if __name__ == "__main__":
     print("SkillSyncAI - Optimized ML Engine")
     print("=" * 60)
     print(f"\nMode: {'Semantic Matching (Advanced)' if USE_SEMANTIC else 'Keyword Matching (Basic)'}")
+    print(f"Hungarian Algorithm: {'Available ✅' if HUNGARIAN_AVAILABLE else 'Unavailable ❌'}")
     
     # Example usage
     extractor = HybridSkillExtractor()
@@ -596,5 +877,33 @@ if __name__ == "__main__":
             print(f"   {ROLE_DISPLAY_NAMES.get(role, role):<12}: {data['score']:.1f}/10")
             if data.get("matched_keywords"):
                 print(f"      Keywords: {', '.join(data['matched_keywords'][:5])}")
+    
+    # Demo Hungarian Algorithm
+    if HUNGARIAN_AVAILABLE:
+        print("\n" + "=" * 60)
+        print("Hungarian Algorithm Demo")
+        print("=" * 60)
+        
+        # Create sample profiles
+        demo_profiles = [
+            {"student_id": "S1", "name": "Alice", "primary_role": "backend", "skills": {"backend": 9, "frontend": 3}, "experience_score": 4, "skill_diversity": 0.6, "top_skills": ["Python", "Django"]},
+            {"student_id": "S2", "name": "Bob", "primary_role": "frontend", "skills": {"frontend": 8, "backend": 4}, "experience_score": 3, "skill_diversity": 0.5, "top_skills": ["React", "CSS"]},
+            {"student_id": "S3", "name": "Carol", "primary_role": "ml", "skills": {"ml": 7, "data": 6}, "experience_score": 5, "skill_diversity": 0.7, "top_skills": ["TensorFlow", "Python"]},
+            {"student_id": "S4", "name": "Dave", "primary_role": "devops", "skills": {"devops": 6, "backend": 5}, "experience_score": 2, "skill_diversity": 0.4, "top_skills": ["Docker", "AWS"]},
+            {"student_id": "S5", "name": "Eve", "primary_role": "data", "skills": {"data": 8, "ml": 4}, "experience_score": 3, "skill_diversity": 0.5, "top_skills": ["Pandas", "SQL"]},
+            {"student_id": "S6", "name": "Frank", "primary_role": "fullstack", "skills": {"fullstack": 7, "backend": 6}, "experience_score": 4, "skill_diversity": 0.6, "top_skills": ["Node.js", "React"]},
+        ]
+        
+        hungarian = HungarianTeamFormer()
+        teams, metrics = hungarian.form_teams_optimal(demo_profiles, target_team_size=3)
+        
+        print(f"\nFormed {len(teams)} teams using Hungarian Algorithm:")
+        for team in teams:
+            print(f"\n   {team['team_name']}:")
+            for member in team["members"]:
+                print(f"      - {member['name']} ({member['assigned_role']})")
+        
+        print(f"\n   Gini Coefficient: {metrics.get('gini_coefficient', 'N/A')}")
+        print(f"   Algorithm: {metrics.get('algorithm', 'N/A')} (Globally Optimal)")
     
     print("\n✅ Optimized ML Engine ready!")
