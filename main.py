@@ -7,6 +7,8 @@ import os
 import json
 import asyncio
 import httpx
+import zipfile
+import io
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -159,6 +161,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "form_teams": "POST /api/form-teams",
+            "form_teams_zip": "POST /api/form-teams-zip",
             "health": "GET /health",
             "model_info": "GET /api/model-info",
         }
@@ -284,6 +287,116 @@ async def form_teams(
             projects=projects,
             target_team_size=team_size,
         )
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        return TeamFormationResponse(
+            success=False,
+            error=str(e),
+            teams=[],
+            profiles=[],
+        )
+
+
+@app.post("/api/form-teams-zip", response_model=TeamFormationResponse)
+async def form_teams_from_zip(
+    resumes_zip: UploadFile = File(..., description="ZIP file containing PDF resumes"),
+    projects_json: Optional[str] = Form(None, description="Projects JSON string"),
+    team_size: int = Form(4, description="Target team size"),
+):
+    """
+    Form teams from a ZIP file containing PDF resumes.
+    
+    **Request:**
+    - `resumes_zip`: A single ZIP file containing multiple PDF resumes
+    - `projects_json`: JSON string containing project requirements (optional)
+    - `team_size`: Target team size (default: 4)
+    
+    **Example:**
+    Upload a file like `resumes.zip` containing:
+    - john_doe.pdf
+    - jane_smith.pdf
+    - bob_wilson.pdf
+    
+    **Response:**
+    - `teams`: List of formed teams with members and explanations
+    - `profiles`: All parsed student profiles
+    - `summary`: Statistics about the team formation
+    """
+    try:
+        # Validate ZIP file
+        if not resumes_zip.filename.lower().endswith('.zip'):
+            raise HTTPException(status_code=400, detail="Please upload a .zip file")
+        
+        # Read ZIP content
+        zip_content = await resumes_zip.read()
+        
+        # Parse projects JSON
+        projects = []
+        if projects_json:
+            try:
+                projects_data = json.loads(projects_json)
+                if isinstance(projects_data, list):
+                    projects = projects_data
+                elif isinstance(projects_data, dict) and "projects" in projects_data:
+                    projects = projects_data["projects"]
+            except json.JSONDecodeError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid projects JSON: {str(e)}")
+        
+        # Extract PDFs from ZIP
+        resume_data = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zip_ref:
+                for file_info in zip_ref.infolist():
+                    # Skip directories and non-PDF files
+                    if file_info.is_dir():
+                        continue
+                    
+                    filename = file_info.filename
+                    # Handle nested folders - get just the filename
+                    if '/' in filename:
+                        filename = filename.split('/')[-1]
+                    if '\\' in filename:
+                        filename = filename.split('\\')[-1]
+                    
+                    # Skip hidden files and non-PDFs
+                    if filename.startswith('.') or filename.startswith('__'):
+                        continue
+                    if not filename.lower().endswith('.pdf'):
+                        continue
+                    
+                    # Read PDF content
+                    pdf_content = zip_ref.read(file_info.filename)
+                    resume_data.append({
+                        "filename": filename,
+                        "content": pdf_content,
+                    })
+                    
+        except zipfile.BadZipFile:
+            raise HTTPException(status_code=400, detail="Invalid or corrupted ZIP file")
+        
+        if not resume_data:
+            raise HTTPException(
+                status_code=400, 
+                detail="No valid PDF files found in the ZIP archive"
+            )
+        
+        # Process team formation
+        result = process_team_formation(
+            resumes=resume_data,
+            projects=projects,
+            target_team_size=team_size,
+        )
+        
+        # Add info about extracted files
+        result["zip_info"] = {
+            "original_filename": resumes_zip.filename,
+            "pdfs_extracted": len(resume_data),
+            "pdf_files": [r["filename"] for r in resume_data],
+        }
         
         return result
     

@@ -1,0 +1,148 @@
+{
+  "info": {
+    "name": "SkillSyncAI API",
+    "description": "API collection for SkillSyncAI team formation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Root",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/",
+          "host": ["{{base_url}}"],
+          "path": [""]
+        }
+      }
+    },
+    {
+      "name": "Model Info",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/model-info",
+          "host": ["{{base_url}}"],
+          "path": ["api", "model-info"]
+        }
+      }
+    },
+    {
+      "name": "Form Teams",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "resumes",
+              "type": "file",
+              "src": [],
+              "description": "Upload PDF resume files"
+            },
+            {
+              "key": "projects_json",
+              "value": "[{\"name\": \"Smart Campus App\", \"description\": \"React frontend, Node.js backend with REST APIs, and ML model for predictions\", \"team_size\": 4}]",
+              "type": "text",
+              "description": "JSON string with project requirements"
+            },
+            {
+              "key": "team_size",
+              "value": "4",
+              "type": "text",
+              "description": "Target team size"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/form-teams",
+          "host": ["{{base_url}}"],
+          "path": ["api", "form-teams"]
+        },
+        "description": "Form teams from uploaded resumes and project requirements"
+      }
+    },
+    {
+      "name": "Parse Resumes Only",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "resumes",
+              "type": "file",
+              "src": [],
+              "description": "Upload PDF resume files"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/parse-resumes",
+          "host": ["{{base_url}}"],
+          "path": ["api", "parse-resumes"]
+        },
+        "description": "Parse resumes and return profiles without team formation"
+      }
+    },
+    {
+      "name": "Form Teams from ZIP",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "resumes_zip",
+              "type": "file",
+              "src": [],
+              "description": "Upload a ZIP file containing PDF resumes"
+            },
+            {
+              "key": "projects_json",
+              "value": "[{\"name\": \"Smart Campus App\", \"description\": \"React frontend, Node.js backend with REST APIs, and ML model for predictions\", \"team_size\": 4}]",
+              "type": "text",
+              "description": "JSON string with project requirements"
+            },
+            {
+              "key": "team_size",
+              "value": "4",
+              "type": "text",
+              "description": "Target team size"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/form-teams-zip",
+          "host": ["{{base_url}}"],
+          "path": ["api", "form-teams-zip"]
+        },
+        "description": "Form teams from a ZIP file containing PDF resumes"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://skillsyncai-api.onrender.com",
+      "type": "string"
+    }
+  ]
+}
