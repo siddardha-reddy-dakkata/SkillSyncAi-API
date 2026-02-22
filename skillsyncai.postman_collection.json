@@ -42,6 +42,19 @@
       }
     },
     {
+      "name": "GitHub Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/github-status",
+          "host": ["{{base_url}}"],
+          "path": ["api", "github-status"]
+        },
+        "description": "Check GitHub API authentication status and rate limits"
+      }
+    },
+    {
       "name": "Form Teams",
       "request": {
         "method": "POST",
@@ -66,6 +79,13 @@
               "value": "4",
               "type": "text",
               "description": "Target team size"
+            },
+            {
+              "key": "github_usernames",
+              "value": "{\"John Doe\": \"johndoe\", \"Jane Smith\": \"janesmith\"}",
+              "type": "text",
+              "description": "JSON mapping of candidate names to GitHub usernames (optional)",
+              "disabled": true
             }
           ]
         },
@@ -74,7 +94,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "form-teams"]
         },
-        "description": "Form teams from uploaded resumes and project requirements"
+        "description": "Form teams from uploaded resumes and project requirements. Optionally include GitHub usernames to enhance skill extraction."
       }
     },
     {
@@ -126,6 +146,13 @@
               "value": "4",
               "type": "text",
               "description": "Target team size"
+            },
+            {
+              "key": "github_usernames",
+              "value": "{\"John Doe\": \"johndoe\", \"Jane Smith\": \"janesmith\"}",
+              "type": "text",
+              "description": "JSON mapping of candidate names to GitHub usernames (optional)",
+              "disabled": true
             }
           ]
         },
@@ -134,7 +161,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "form-teams-zip"]
         },
-        "description": "Form teams from a ZIP file containing PDF resumes"
+        "description": "Form teams from a ZIP file containing PDF resumes. Optionally include GitHub usernames to enhance skill extraction."
       }
     }
   ],

@@ -375,6 +375,104 @@ def build_student_profile(resume_data: Dict) -> Dict:
     return profile
 
 
+def build_student_profile_with_github(
+    resume_data: Dict,
+    github_skills: Optional[Dict] = None,
+    resume_weight: float = 0.6,
+    github_weight: float = 0.4
+) -> Dict:
+    """
+    Build a complete student profile from resume data, optionally enhanced with GitHub data.
+    
+    Args:
+        resume_data: Parsed resume data with raw_text
+        github_skills: Skills extracted from GitHub profile (optional)
+        resume_weight: Weight for resume skills (default 0.6)
+        github_weight: Weight for GitHub skills (default 0.4)
+    
+    Returns:
+        Complete student profile with merged skills
+    """
+    text = resume_data["raw_text"]
+
+    # Extract skills from resume
+    resume_skill_data = extract_skills(text)
+    
+    # Merge with GitHub skills if provided
+    if github_skills:
+        merged_skills = {}
+        for role in ALL_ROLES:
+            resume_score = resume_skill_data.get(role, {}).get("score", 0)
+            github_score = github_skills.get(role, {}).get("score", 0)
+            
+            # Weighted average
+            combined_score = (
+                resume_score * resume_weight +
+                github_score * github_weight
+            )
+            
+            # Merge keywords
+            resume_keywords = resume_skill_data.get(role, {}).get("matched_keywords", [])
+            github_keywords = github_skills.get(role, {}).get("matched_keywords", [])
+            
+            merged_skills[role] = {
+                "score": round(combined_score, 1),
+                "matched_keywords": resume_keywords[:5] + github_keywords[:3],
+                "unique_skills": len(set(resume_keywords[:5] + github_keywords[:3])),
+                "raw_count": resume_skill_data.get(role, {}).get("raw_count", 0),
+                "resume_score": resume_score,
+                "github_score": github_score,
+            }
+        skill_data = merged_skills
+    else:
+        skill_data = resume_skill_data
+    
+    primary_role = determine_primary_role(skill_data)
+
+    title_role = infer_role_from_title(text)
+    if title_role and title_role != primary_role:
+        title_score = skill_data.get(title_role, {}).get("score", 0)
+        primary_score = skill_data.get(primary_role, {}).get("score", 0)
+        if title_score >= primary_score * 0.7:
+            primary_role = title_role
+
+    experience = calculate_experience_score(text)
+    
+    # Boost experience score if GitHub shows activity
+    if github_skills:
+        github_activity_bonus = min(0.5, sum(
+            1 for r in github_skills.values() 
+            if r.get("score", 0) > 3
+        ) * 0.1)
+        experience["score"] = min(5.0, experience["score"] + github_activity_bonus)
+
+    skill_diversity = sum(
+        1 for r in skill_data.values() if r.get("score", 0) > 0
+    ) / len(ALL_ROLES)
+
+    top_skills = []
+    for role in ALL_ROLES:
+        for kw in skill_data.get(role, {}).get("matched_keywords", [])[:3]:
+            if kw not in top_skills:
+                top_skills.append(kw)
+
+    profile = {
+        "student_id": resume_data["student_id"],
+        "name": resume_data["name"],
+        "filename": resume_data["filename"],
+        "skills": {role: data.get("score", 0) for role, data in skill_data.items()},
+        "skill_details": skill_data,
+        "primary_role": primary_role,
+        "experience_score": experience["score"],
+        "experience_details": experience,
+        "skill_diversity": round(skill_diversity, 2),
+        "top_skills": top_skills,
+        "has_github": github_skills is not None,
+    }
+
+    return profile
+
+
 # ============================================================
 # PROJECT REQUIREMENT PARSER
 # ============================================================
@@ -726,7 +824,8 @@ def generate_all_explanations(teams: List[Dict], profiles: List[Dict]) -> List[D
 def process_team_formation(
     resumes: List[Dict],  # List of {"filename": str, "content": bytes or str}
     projects: List[Dict],  # List of {"name": str, "description": str, "team_size": int}
-    target_team_size: int = 4
+    target_team_size: int = 4,
+    github_data: Optional[Dict[str, Dict]] = None  # {candidate_name: github_skills}
 ) -> Dict:
     """
     Main function to process resumes and form teams.
@@ -735,6 +834,7 @@ def process_team_formation(
         resumes: List of resume data with filename and content (bytes for PDF, str for text)
         projects: List of project requirements
         target_team_size: Default team size
+        github_data: Optional dict mapping candidate names to their GitHub skill data
     
     Returns:
         Dict with teams, profiles, and summary
@@ -772,8 +872,23 @@ def process_team_formation(
             "profiles": [],
         }
     
-    # Step 2: Build student profiles
-    student_profiles = [build_student_profile(r) for r in parsed_resumes]
+    # Step 2: Build student profiles (with GitHub data if available)
+    student_profiles = []
+    for resume in parsed_resumes:
+        # Try to match GitHub data by name (case-insensitive)
+        candidate_github = None
+        if github_data:
+            name_lower = resume["name"].lower()
+            for github_name, github_skills in github_data.items():
+                if github_name.lower() == name_lower or github_name.lower() in name_lower:
+                    candidate_github = github_skills.get("skills")
+                    break
+        
+        if candidate_github:
+            profile = build_student_profile_with_github(resume, candidate_github)
+        else:
+            profile = build_student_profile(resume)
+        student_profiles.append(profile)
     
     # Step 3: Parse project requirements (if provided)
     parsed_projects = []

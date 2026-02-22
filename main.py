@@ -17,6 +17,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ml_engine import process_team_formation
+from github_fetcher import (
+    GitHubFetcher, 
+    fetch_multiple_github_profiles, 
+    get_github_rate_limit_info,
+    is_github_authenticated
+)
 
 # ============================================================
 # Keep-Alive Background Task (prevents Render free tier sleep)
@@ -164,6 +170,7 @@ async def root():
             "form_teams_zip": "POST /api/form-teams-zip",
             "health": "GET /health",
             "model_info": "GET /api/model-info",
+            "github_status": "GET /api/github-status",
         }
     }
 
@@ -172,6 +179,20 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/api/github-status")
+async def github_status():
+    """
+    Check GitHub API authentication status and rate limits.
+    
+    **Response:**
+    - `authenticated`: Whether a GitHub token is configured
+    - `rate_limit`: Maximum requests per hour (60 without token, 5000 with token)
+    - `remaining`: Remaining requests in current window
+    - `message`: Human-readable status message
+    """
+    return await get_github_rate_limit_info()
 
 
 @app.get("/api/model-info")
@@ -207,6 +228,12 @@ async def get_model_info():
             "explainability": {
                 "method": "Rule-based Explanation Generation",
                 "description": "Each assignment includes human-readable reasoning (XAI)"
+            },
+            "github_integration": {
+                "method": "GitHub API Profile Analysis",
+                "description": "Extracts skills from repository languages and topics",
+                "data_sources": ["Repository languages", "Repository topics", "Stars count", "Activity level"],
+                "formula": "final_skill = 0.6×resume_skill + 0.4×github_skill"
             }
         },
         "metrics": {
@@ -218,7 +245,7 @@ async def get_model_info():
             "Semantic embeddings using Sentence Transformers (BERT)",
             "Hungarian Algorithm for optimal assignment",
             "Feedback loop for model refinement",
-            "GitHub/LinkedIn profile integration"
+            "LinkedIn profile integration"
         ]
     }
 
@@ -228,6 +255,7 @@ async def form_teams(
     resumes: List[UploadFile] = File(..., description="Student resume PDF files"),
     projects_json: Optional[str] = Form(None, description="Projects JSON string"),
     team_size: int = Form(4, description="Target team size"),
+    github_usernames: Optional[str] = Form(None, description="JSON mapping of candidate names to GitHub usernames"),
 ):
     """
     Form teams from uploaded resumes and project requirements.
@@ -236,6 +264,7 @@ async def form_teams(
     - `resumes`: Multiple PDF files (student resumes)
     - `projects_json`: JSON string containing project requirements (optional)
     - `team_size`: Target team size (default: 4)
+    - `github_usernames`: JSON mapping of candidate names to GitHub usernames (optional)
     
     **projects_json format:**
     ```json
@@ -246,6 +275,14 @@ async def form_teams(
             "team_size": 4
         }
     ]
+    ```
+    
+    **github_usernames format:**
+    ```json
+    {
+        "John Doe": "johndoe",
+        "Jane Smith": "janesmith123"
+    }
     ```
     
     **Response:**
@@ -281,12 +318,31 @@ async def form_teams(
         if not resume_data:
             raise HTTPException(status_code=400, detail="No valid PDF resumes provided")
         
+        # Fetch GitHub data if usernames provided
+        github_data = None
+        if github_usernames:
+            try:
+                github_mapping = json.loads(github_usernames)
+                if isinstance(github_mapping, dict) and github_mapping:
+                    github_data = await fetch_multiple_github_profiles(github_mapping)
+            except json.JSONDecodeError as e:
+                # Log but don't fail - GitHub data is optional
+                print(f"Warning: Invalid github_usernames JSON: {e}")
+        
         # Process team formation
         result = process_team_formation(
             resumes=resume_data,
             projects=projects,
             target_team_size=team_size,
+            github_data=github_data,
         )
+        
+        # Add GitHub info to result if available
+        if github_data:
+            result["github_info"] = {
+                "profiles_fetched": len(github_data),
+                "profiles": {name: data.get("metrics", {}) for name, data in github_data.items()}
+            }
         
         return result
     
@@ -306,6 +362,7 @@ async def form_teams_from_zip(
     resumes_zip: UploadFile = File(..., description="ZIP file containing PDF resumes"),
     projects_json: Optional[str] = Form(None, description="Projects JSON string"),
     team_size: int = Form(4, description="Target team size"),
+    github_usernames: Optional[str] = Form(None, description="JSON mapping of candidate names to GitHub usernames"),
 ):
     """
     Form teams from a ZIP file containing PDF resumes.
@@ -314,12 +371,21 @@ async def form_teams_from_zip(
     - `resumes_zip`: A single ZIP file containing multiple PDF resumes
     - `projects_json`: JSON string containing project requirements (optional)
     - `team_size`: Target team size (default: 4)
+    - `github_usernames`: JSON mapping of candidate names to GitHub usernames (optional)
     
     **Example:**
     Upload a file like `resumes.zip` containing:
     - john_doe.pdf
     - jane_smith.pdf
     - bob_wilson.pdf
+    
+    **github_usernames format:**
+    ```json
+    {
+        "John Doe": "johndoe",
+        "Jane Smith": "janesmith123"
+    }
+    ```
     
     **Response:**
     - `teams`: List of formed teams with members and explanations
@@ -384,11 +450,22 @@ async def form_teams_from_zip(
                 detail="No valid PDF files found in the ZIP archive"
             )
         
+        # Fetch GitHub data if usernames provided
+        github_data = None
+        if github_usernames:
+            try:
+                github_mapping = json.loads(github_usernames)
+                if isinstance(github_mapping, dict) and github_mapping:
+                    github_data = await fetch_multiple_github_profiles(github_mapping)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Invalid github_usernames JSON: {e}")
+        
         # Process team formation
         result = process_team_formation(
             resumes=resume_data,
             projects=projects,
             target_team_size=team_size,
+            github_data=github_data,
         )
         
         # Add info about extracted files
@@ -397,6 +474,13 @@ async def form_teams_from_zip(
             "pdfs_extracted": len(resume_data),
             "pdf_files": [r["filename"] for r in resume_data],
         }
+        
+        # Add GitHub info if available
+        if github_data:
+            result["github_info"] = {
+                "profiles_fetched": len(github_data),
+                "profiles": {name: data.get("metrics", {}) for name, data in github_data.items()}
+            }
         
         return result
     
