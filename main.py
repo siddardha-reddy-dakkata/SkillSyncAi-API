@@ -160,6 +160,7 @@ async def root():
         "endpoints": {
             "form_teams": "POST /api/form-teams",
             "health": "GET /health",
+            "model_info": "GET /api/model-info",
         }
     }
 
@@ -168,6 +169,55 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/api/model-info")
+async def get_model_info():
+    """
+    Get information about the ML model and techniques used.
+    Useful for academic presentation and viva.
+    """
+    return {
+        "model_name": "SkillSyncAI Team Formation Model",
+        "version": "1.0.0",
+        "techniques": {
+            "skill_extraction": {
+                "method": "Rule-based Keyword Matching",
+                "description": "Pattern matching against 200+ technology keywords across 7 role categories",
+                "complexity": "O(n × k) where n=text length, k=keywords"
+            },
+            "experience_scoring": {
+                "method": "Weighted Keyword Frequency",
+                "description": "Identifies experience indicators (internship, hackathon, project) with weighted scoring",
+                "normalization": "Sigmoid-based normalization to 0-5 scale"
+            },
+            "matching_algorithm": {
+                "method": "Weighted Linear Combination",
+                "formula": "score = 0.6×skill + 0.3×experience + 0.1×diversity + bonus",
+                "academic_basis": "Multi-criteria decision making (MCDM)"
+            },
+            "team_formation": {
+                "method": "Snake Draft with Role Balancing",
+                "description": "Alternating pick order ensures fair distribution of talent",
+                "constraints": ["Role diversity", "Skill balance", "Team size equality"]
+            },
+            "explainability": {
+                "method": "Rule-based Explanation Generation",
+                "description": "Each assignment includes human-readable reasoning (XAI)"
+            }
+        },
+        "metrics": {
+            "team_balance": "Gini coefficient for strength distribution",
+            "role_coverage": "Percentage of required roles filled per team",
+            "assignment_rate": "Percentage of students successfully assigned"
+        },
+        "future_improvements": [
+            "Semantic embeddings using Sentence Transformers (BERT)",
+            "Hungarian Algorithm for optimal assignment",
+            "Feedback loop for model refinement",
+            "GitHub/LinkedIn profile integration"
+        ]
+    }
 
 
 @app.post("/api/form-teams", response_model=TeamFormationResponse)
