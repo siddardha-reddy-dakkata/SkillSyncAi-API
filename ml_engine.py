@@ -265,6 +265,101 @@ def extract_skills(text: str) -> Dict[str, Dict]:
     return role_data
 
 
+def calculate_skill_percentages(text: str, skill_data: Dict[str, Dict]) -> Dict[str, int]:
+    """
+    Calculate percentage proficiency for each individual skill found.
+    
+    Scoring factors:
+    - Base score from mention count (more mentions = higher confidence)
+    - Context bonus (appears in skills section, projects, etc.)
+    - Variability for realistic distribution
+    
+    Returns:
+        Dict mapping skill name -> percentage (40-95%)
+    """
+    import random
+    import hashlib
+    
+    cleaned = preprocess_text(text)
+    skill_percentages = {}
+    
+    # Collect all matched skills with their counts
+    skill_counts = {}
+    for role, data in skill_data.items():
+        for keyword in data.get("matched_keywords", []):
+            # Count occurrences
+            if len(keyword) <= 3:
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+            else:
+                pattern = re.escape(keyword)
+            count = len(re.findall(pattern, cleaned))
+            skill_counts[keyword] = count
+    
+    if not skill_counts:
+        return {}
+    
+    # Get max count for normalization
+    max_count = max(skill_counts.values())
+    
+    # Context patterns that indicate proficiency
+    proficiency_patterns = [
+        r'expert\s+in|proficient\s+in|advanced\s+in|strong\s+in',
+        r'\d+\s*\+?\s*years?.*experience',
+        r'built|developed|created|implemented|designed|led',
+        r'certified|certification',
+    ]
+    
+    for skill, count in skill_counts.items():
+        # Base score: 50-75 based on mention frequency
+        base_score = 50 + (count / max(max_count, 1)) * 25
+        
+        # Context bonus: check if skill appears in proficiency context
+        context_bonus = 0
+        skill_context = re.findall(r'.{0,50}' + re.escape(skill) + r'.{0,50}', cleaned)
+        for context in skill_context:
+            for pattern in proficiency_patterns:
+                if re.search(pattern, context):
+                    context_bonus += 5
+                    break
+        context_bonus = min(context_bonus, 15)  # Cap at 15
+        
+        # Deterministic "random" variation based on skill name (consistent across runs)
+        hash_val = int(hashlib.md5(skill.encode()).hexdigest()[:8], 16)
+        variation = (hash_val % 15) - 7  # -7 to +7
+        
+        # Final score: 40-95 range
+        final_score = int(min(95, max(40, base_score + context_bonus + variation)))
+        
+        # Capitalize skill name nicely
+        display_name = skill.title() if len(skill) > 3 else skill.upper()
+        # Special cases for common skills
+        display_names = {
+            "javascript": "JavaScript", "typescript": "TypeScript",
+            "nodejs": "Node.js", "node.js": "Node.js", "reactjs": "React.js",
+            "react.js": "React.js", "vuejs": "Vue.js", "vue.js": "Vue.js",
+            "angularjs": "AngularJS", "mongodb": "MongoDB", "mysql": "MySQL",
+            "postgresql": "PostgreSQL", "graphql": "GraphQL", "github": "GitHub",
+            "gitlab": "GitLab", "tensorflow": "TensorFlow", "pytorch": "PyTorch",
+            "opencv": "OpenCV", "scikit-learn": "Scikit-learn", "sklearn": "Scikit-learn",
+            "aws": "AWS", "gcp": "GCP", "ci/cd": "CI/CD", "docker": "Docker",
+            "kubernetes": "Kubernetes", "html": "HTML", "css": "CSS",
+            "sql": "SQL", "nosql": "NoSQL", "api": "API", "rest api": "REST API",
+            "html5": "HTML5", "css3": "CSS3", "jwt": "JWT", "oauth": "OAuth",
+            "llm": "LLM", "nlp": "NLP", "cnn": "CNN", "rnn": "RNN", "lstm": "LSTM",
+            "ai": "AI", "ml": "ML", "ui": "UI", "ux": "UX", "ui/ux": "UI/UX",
+        }
+        display_name = display_names.get(skill.lower(), display_name)
+        
+        skill_percentages[display_name] = final_score
+    
+    # Sort by percentage descending
+    skill_percentages = dict(
+        sorted(skill_percentages.items(), key=lambda x: x[1], reverse=True)
+    )
+    
+    return skill_percentages
+
+
 def determine_primary_role(skill_data: Dict[str, Dict]) -> str:
     """Determine the student's primary role based on highest skill score."""
     best_role = "backend"
@@ -359,12 +454,16 @@ def build_student_profile(resume_data: Dict) -> Dict:
         for kw in skill_data[role]["matched_keywords"][:3]:
             top_skills.append(kw)
 
+    # Calculate individual skill percentages
+    skill_percentages = calculate_skill_percentages(text, skill_data)
+
     profile = {
         "student_id": resume_data["student_id"],
         "name": resume_data["name"],
         "filename": resume_data["filename"],
         "skills": {role: data["score"] for role, data in skill_data.items()},
         "skill_details": skill_data,
+        "skill_percentages": skill_percentages,  # NEW: Individual skill scores
         "primary_role": primary_role,
         "experience_score": experience["score"],
         "experience_details": experience,
@@ -456,12 +555,30 @@ def build_student_profile_with_github(
             if kw not in top_skills:
                 top_skills.append(kw)
 
+    # Calculate individual skill percentages
+    skill_percentages = calculate_skill_percentages(text, skill_data)
+    
+    # Add GitHub skills to percentages with bonus
+    if github_skills:
+        for role, gh_data in github_skills.items():
+            for kw in gh_data.get("matched_keywords", []):
+                display_name = kw.title() if len(kw) > 3 else kw.upper()
+                if display_name not in skill_percentages:
+                    # GitHub-only skills get a base score
+                    skill_percentages[display_name] = 55 + (hash(kw) % 20)
+                else:
+                    # Boost existing skills found on GitHub
+                    skill_percentages[display_name] = min(95, skill_percentages[display_name] + 8)
+        # Re-sort
+        skill_percentages = dict(sorted(skill_percentages.items(), key=lambda x: x[1], reverse=True))
+
     profile = {
         "student_id": resume_data["student_id"],
         "name": resume_data["name"],
         "filename": resume_data["filename"],
         "skills": {role: data.get("score", 0) for role, data in skill_data.items()},
         "skill_details": skill_data,
+        "skill_percentages": skill_percentages,  # NEW: Individual skill scores
         "primary_role": primary_role,
         "experience_score": experience["score"],
         "experience_details": experience,
