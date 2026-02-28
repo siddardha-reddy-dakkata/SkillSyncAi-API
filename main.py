@@ -111,6 +111,8 @@ class TeamMember(BaseModel):
     experience_score: float
     reason: str
     top_skills: List[str]
+    participant_id: Optional[str] = None  # NEW: Original participant ID
+    skill_percentages: Optional[dict] = None  # NEW: Individual skill percentages
 
 
 class BalanceScore(BaseModel):
@@ -127,6 +129,8 @@ class Team(BaseModel):
     balance_score: BalanceScore
     members: List[TeamMember]
     roles_covered: List[str]
+    project_id: Optional[str] = None  # NEW: Assigned project ID
+    project_name: Optional[str] = None  # NEW: Assigned project name
 
 
 class StudentProfile(BaseModel):
@@ -137,6 +141,9 @@ class StudentProfile(BaseModel):
     experience_score: float
     skill_diversity: float
     top_skills: List[str]
+    participant_id: Optional[str] = None  # NEW: Original participant ID
+    github_profile: Optional[str] = None  # NEW: GitHub username
+    skill_percentages: Optional[dict] = None  # NEW: Individual skill percentages
 
 
 class Summary(BaseModel):
@@ -167,6 +174,7 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "form_teams": "POST /api/form-teams",
+            "form_teams_v2": "POST /api/v2/form-teams (NEW - Structured payload)",
             "form_teams_zip": "POST /api/form-teams-zip",
             "health": "GET /health",
             "model_info": "GET /api/model-info",
@@ -600,6 +608,230 @@ async def parse_resumes(
         return {
             "success": False,
             "error": str(e),
+            "profiles": [],
+        }
+
+
+# ============================================================
+# NEW V2 ENDPOINT - Structured Payload Format
+# ============================================================
+
+@app.post("/api/v2/form-teams")
+async def form_teams_v2(
+    resumes: List[UploadFile] = File(..., description="Participant resume PDFs (order must match participantData)"),
+    projects: str = Form(..., description="JSON array of projects"),
+    participantData: str = Form(..., description="JSON array of participant info"),
+):
+    """
+    Form teams with structured participant and project data.
+    
+    **Request Format:**
+    - `resumes`: PDF files (ORDER MUST MATCH participantData array)
+    - `projects`: JSON string
+    - `participantData`: JSON string
+    
+    **projects format:**
+    ```json
+    [
+        {
+            "projectId": "P001",
+            "projectName": "AI Chatbot",
+            "description": "Build an AI-powered chatbot using NLP",
+            "techstack": "Python, TensorFlow, React, Node.js"
+        }
+    ]
+    ```
+    
+    **participantData format:**
+    ```json
+    [
+        {
+            "participantId": "PART001",
+            "participantName": "John Doe",
+            "githubProfile": "johndoe123"
+        },
+        {
+            "participantId": "PART002",
+            "participantName": "Jane Smith",
+            "githubProfile": "janesmith"
+        }
+    ]
+    ```
+    
+    **Important:** The order of resumes must match the order of participantData.
+    - resumes[0] belongs to participantData[0]
+    - resumes[1] belongs to participantData[1]
+    - etc.
+    
+    **Response:** Teams with original participantId, participantName, and projectId preserved.
+    """
+    try:
+        # Parse projects JSON
+        try:
+            projects_list = json.loads(projects)
+            if not isinstance(projects_list, list):
+                raise HTTPException(status_code=400, detail="projects must be a JSON array")
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid projects JSON: {str(e)}")
+        
+        # Parse participantData JSON
+        try:
+            participants_list = json.loads(participantData)
+            if not isinstance(participants_list, list):
+                raise HTTPException(status_code=400, detail="participantData must be a JSON array")
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid participantData JSON: {str(e)}")
+        
+        # Validate resume count matches participant count
+        pdf_resumes = [r for r in resumes if r.filename.lower().endswith('.pdf')]
+        if len(pdf_resumes) != len(participants_list):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Resume count ({len(pdf_resumes)}) must match participantData count ({len(participants_list)})"
+            )
+        
+        # Build resume data with participant info (order-matched)
+        resume_data = []
+        participant_map = {}  # Map student_id -> participant info
+        github_mapping = {}   # Map participant name -> github username
+        
+        for idx, (resume_file, participant) in enumerate(zip(pdf_resumes, participants_list)):
+            content = await resume_file.read()
+            
+            participant_id = participant.get("participantId", f"P{idx+1:03d}")
+            participant_name = participant.get("participantName", f"Participant_{idx+1}")
+            github_profile = participant.get("githubProfile", "")
+            
+            # Use participant name as the student identifier
+            student_id = f"S{idx+1:03d}"
+            
+            resume_data.append({
+                "filename": resume_file.filename,
+                "content": content,
+                "student_id": student_id,
+                "name": participant_name,
+            })
+            
+            # Store mapping for later
+            participant_map[student_id] = {
+                "participant_id": participant_id,
+                "participant_name": participant_name,
+                "github_profile": github_profile,
+            }
+            
+            # Build GitHub mapping
+            if github_profile:
+                github_mapping[participant_name] = github_profile
+        
+        # Fetch GitHub data if any profiles provided
+        github_data = None
+        if github_mapping:
+            try:
+                github_data = await fetch_multiple_github_profiles(github_mapping)
+            except Exception as e:
+                print(f"Warning: GitHub fetch failed: {e}")
+        
+        # Convert projects to internal format
+        internal_projects = []
+        project_map = {}  # Map project index -> project info
+        
+        for idx, proj in enumerate(projects_list):
+            project_id = proj.get("projectId", f"PROJ{idx+1:03d}")
+            project_name = proj.get("projectName", f"Project {idx+1}")
+            description = proj.get("description", "")
+            techstack = proj.get("techstack", "")
+            
+            # Combine description and techstack for requirements
+            requirements = f"{description}. Tech stack: {techstack}" if techstack else description
+            
+            internal_projects.append({
+                "name": project_name,
+                "description": requirements,
+                "team_size": max(1, len(participants_list) // max(len(projects_list), 1)),
+            })
+            
+            project_map[idx] = {
+                "project_id": project_id,
+                "project_name": project_name,
+            }
+        
+        # Calculate team size based on participants and projects
+        if internal_projects:
+            target_team_size = max(2, len(participants_list) // len(internal_projects))
+        else:
+            target_team_size = 4
+        
+        # Process team formation
+        result = process_team_formation(
+            resumes=resume_data,
+            projects=internal_projects,
+            target_team_size=target_team_size,
+            github_data=github_data,
+        )
+        
+        # Enrich response with original IDs
+        enriched_teams = []
+        for idx, team in enumerate(result.get("teams", [])):
+            # Add project info
+            proj_info = project_map.get(idx, {})
+            
+            enriched_members = []
+            for member in team.get("members", []):
+                student_id = member.get("student_id", "")
+                part_info = participant_map.get(student_id, {})
+                
+                enriched_member = {
+                    **member,
+                    "participant_id": part_info.get("participant_id", student_id),
+                    "participant_name": part_info.get("participant_name", member.get("name", "")),
+                    "github_profile": part_info.get("github_profile", ""),
+                }
+                enriched_members.append(enriched_member)
+            
+            enriched_team = {
+                **team,
+                "members": enriched_members,
+                "project_id": proj_info.get("project_id"),
+                "project_name": proj_info.get("project_name"),
+            }
+            enriched_teams.append(enriched_team)
+        
+        # Enrich profiles with participant info
+        enriched_profiles = []
+        for profile in result.get("profiles", []):
+            student_id = profile.get("student_id", "")
+            part_info = participant_map.get(student_id, {})
+            
+            enriched_profile = {
+                **profile,
+                "participant_id": part_info.get("participant_id", student_id),
+                "participant_name": part_info.get("participant_name", profile.get("name", "")),
+                "github_profile": part_info.get("github_profile", ""),
+            }
+            enriched_profiles.append(enriched_profile)
+        
+        return {
+            "success": True,
+            "summary": result.get("summary"),
+            "teams": enriched_teams,
+            "profiles": enriched_profiles,
+            "projects_received": [
+                {"project_id": p.get("projectId"), "project_name": p.get("projectName")}
+                for p in projects_list
+            ],
+            "participants_received": len(participants_list),
+            "github_profiles_fetched": len(github_data) if github_data else 0,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "teams": [],
             "profiles": [],
         }
 

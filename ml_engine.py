@@ -971,8 +971,10 @@ def process_team_formation(
         if not raw_text:
             continue
         
-        name = extract_name_from_filename(filename)
-        student_id = f"S{idx:03d}"
+        # Use provided student_id and name if available (from V2 endpoint)
+        # Otherwise extract from filename
+        student_id = resume.get("student_id") or f"S{idx:03d}"
+        name = resume.get("name") or extract_name_from_filename(filename)
         
         parsed_resumes.append({
             "student_id": student_id,
