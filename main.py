@@ -16,13 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ml_engine import process_team_formation
+from ml_engine import process_team_formation, get_active_weights, reload_feedback_weights
 from github_fetcher import (
     GitHubFetcher, 
     fetch_multiple_github_profiles, 
     get_github_rate_limit_info,
     is_github_authenticated
 )
+from feedback_trainer import FeedbackModel, FeedbackEnhancedScorer
 
 # ============================================================
 # Keep-Alive Background Task (prevents Render free tier sleep)
@@ -834,6 +835,216 @@ async def form_teams_v2(
             "teams": [],
             "profiles": [],
         }
+
+
+# ============================================================
+# FEEDBACK LOOP ENDPOINTS
+# ============================================================
+
+class FeedbackRecord(BaseModel):
+    """A single team outcome feedback record."""
+    team_id: str
+    project_type: str = "web_application"
+    project_name: str = ""
+    required_skills: List[str] = []
+    members: List[dict]  # [{name, assigned_role, skills, skill_level, experience_years}]
+    success: bool
+    grade: str = "B"
+    score: float = 75.0
+    completion_status: str = "completed"
+    notes: str = ""
+
+class FeedbackBatch(BaseModel):
+    """Batch of feedback records."""
+    records: List[FeedbackRecord]
+
+class TeamPredictionRequest(BaseModel):
+    """Request to predict team success."""
+    project_type: str = "web_application"
+    required_skills: List[str] = []
+    members: List[dict]
+
+
+@app.post("/api/feedback")
+async def submit_feedback(feedback: FeedbackBatch):
+    """
+    Submit team outcome feedback for the learning pipeline.
+    
+    Appends new records to feedback_training_data.json and
+    optionally triggers retraining.
+    """
+    try:
+        data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_training_data.json")
+        
+        # Load existing data
+        if os.path.exists(data_path):
+            with open(data_path, "r") as f:
+                existing = json.load(f)
+        else:
+            existing = {"metadata": {"total_records": 0}, "team_records": []}
+        
+        # Append new records
+        new_records = []
+        for record in feedback.records:
+            new_record = {
+                "team_id": record.team_id,
+                "project": {
+                    "project_type": record.project_type,
+                    "project_name": record.project_name,
+                    "required_skills": record.required_skills,
+                },
+                "members": record.members,
+                "outcome": {
+                    "success": record.success,
+                    "grade": record.grade,
+                    "score": record.score,
+                    "completion_status": record.completion_status,
+                    "notes": record.notes,
+                }
+            }
+            new_records.append(new_record)
+        
+        existing["team_records"].extend(new_records)
+        existing["metadata"]["total_records"] = len(existing["team_records"])
+        
+        # Count success/failure
+        successes = sum(1 for r in existing["team_records"] if r["outcome"]["success"])
+        failures = len(existing["team_records"]) - successes
+        existing["metadata"]["success_count"] = successes
+        existing["metadata"]["failure_count"] = failures
+        
+        with open(data_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        
+        return {
+            "success": True,
+            "records_added": len(new_records),
+            "total_records": existing["metadata"]["total_records"],
+            "message": f"Added {len(new_records)} feedback records. Use POST /api/retrain to update the model."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {str(e)}")
+
+
+@app.post("/api/retrain")
+async def retrain_model():
+    """
+    Retrain the feedback model on all available data.
+    Reloads learned weights into the team formation engine.
+    """
+    try:
+        model = FeedbackModel()
+        metrics = model.train()
+        
+        if "error" in metrics:
+            return {"success": False, "error": metrics["error"]}
+        
+        # Reload weights in the ml_engine
+        new_weights = reload_feedback_weights()
+        
+        return {
+            "success": True,
+            "training_metrics": {
+                "records_used": metrics.get("records_used"),
+                "cv_accuracy": metrics.get("cv_accuracy_mean", metrics.get("train_accuracy")),
+                "train_f1": metrics.get("train_f1"),
+                "train_accuracy": metrics.get("train_accuracy"),
+            },
+            "learned_weights": metrics.get("learned_weights"),
+            "top_features": dict(
+                sorted(
+                    metrics.get("feature_importances", {}).items(),
+                    key=lambda x: x[1], reverse=True
+                )[:5]
+            ),
+            "message": "Model retrained and weights reloaded into team formation engine."
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
+
+
+@app.post("/api/predict-team-success")
+async def predict_team_success(request: TeamPredictionRequest):
+    """
+    Predict whether a team composition will succeed.
+    Uses the feedback-trained model.
+    """
+    try:
+        model = FeedbackModel()
+        
+        team_record = {
+            "project": {
+                "project_type": request.project_type,
+                "required_skills": request.required_skills,
+            },
+            "members": request.members,
+        }
+        
+        result = model.predict_success(team_record)
+        return {
+            "success": True,
+            "prediction": result["prediction"],
+            "success_probability": result["success_probability"],
+            "failure_probability": result["failure_probability"],
+            "factors": result.get("factors", []),
+            "features": result.get("features", {}),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+
+@app.get("/api/feedback-weights")
+async def get_feedback_weights():
+    """
+    Get the currently active weights (learned or default).
+    Shows what the model learned from feedback data.
+    """
+    weights = get_active_weights()
+    
+    # Load training report if available
+    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "training_report.json")
+    training_report = None
+    if os.path.exists(report_path):
+        with open(report_path, "r") as f:
+            training_report = json.load(f)
+    
+    return {
+        "active_weights": weights,
+        "training_report": training_report,
+    }
+
+
+@app.get("/api/feedback-data-stats")
+async def get_feedback_data_stats():
+    """Get statistics about the feedback training data."""
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_training_data.json")
+    
+    if not os.path.exists(data_path):
+        return {"has_data": False, "total_records": 0}
+    
+    with open(data_path, "r") as f:
+        data = json.load(f)
+    
+    records = data.get("team_records", [])
+    metadata = data.get("metadata", {})
+    
+    # Project type distribution
+    project_types = {}
+    for r in records:
+        pt = r.get("project", {}).get("project_type", "unknown")
+        project_types[pt] = project_types.get(pt, 0) + 1
+    
+    return {
+        "has_data": True,
+        "total_records": len(records),
+        "metadata": metadata,
+        "project_type_distribution": project_types,
+        "model_trained": os.path.exists(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights.pkl")
+        ),
+    }
 
 
 # ============================================================

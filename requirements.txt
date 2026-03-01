@@ -16,3 +16,8 @@ pdfplumber>=0.10.0
 
 # Production server
 gunicorn>=21.0.0
+
+# ML Pipeline / Feedback Loop
+numpy>=1.24.0
+scikit-learn>=1.3.0
+joblib>=1.3.0

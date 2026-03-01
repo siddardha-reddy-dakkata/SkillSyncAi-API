@@ -164,10 +164,69 @@ EXPERIENCE_KEYWORDS = {
 
 ALL_ROLES = list(SKILL_DICTIONARY.keys())
 
-# Matching weights
+# Matching weights (defaults — overridden by feedback loop when trained)
 WEIGHT_SKILL = 0.6
 WEIGHT_EXPERIENCE = 0.3
 WEIGHT_DIVERSITY = 0.1
+
+# ============================================================
+# FEEDBACK LOOP INTEGRATION — Load learned weights if available
+# ============================================================
+
+_feedback_weights = None
+_feedback_weights_source = "default_static"
+
+def _load_feedback_weights():
+    """Load feedback-trained weights from model_weights.pkl if available."""
+    global _feedback_weights, _feedback_weights_source
+    global WEIGHT_SKILL, WEIGHT_EXPERIENCE, WEIGHT_DIVERSITY
+    
+    weights_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights.pkl")
+    if not os.path.exists(weights_path):
+        return
+    
+    try:
+        import pickle
+        with open(weights_path, "rb") as f:
+            save_data = pickle.load(f)
+        
+        learned = save_data.get("learned_weights", {})
+        if not learned:
+            return
+        
+        _feedback_weights = learned
+        _feedback_weights_source = "feedback_trained"
+        
+        # Override static weights with learned values
+        WEIGHT_SKILL = learned.get("weight_skill", 0.6)
+        WEIGHT_EXPERIENCE = learned.get("weight_experience", 0.3)
+        WEIGHT_DIVERSITY = learned.get("weight_diversity", 0.1)
+        
+        print(f"[FeedbackLoop] Loaded trained weights: skill={WEIGHT_SKILL:.3f}, "
+              f"exp={WEIGHT_EXPERIENCE:.3f}, div={WEIGHT_DIVERSITY:.3f}")
+    except Exception as e:
+        print(f"[FeedbackLoop] Could not load weights: {e}")
+
+
+def get_active_weights() -> Dict:
+    """Return the currently active weights (learned or default)."""
+    return {
+        "weight_skill": WEIGHT_SKILL,
+        "weight_experience": WEIGHT_EXPERIENCE,
+        "weight_diversity": WEIGHT_DIVERSITY,
+        "feedback_weights": _feedback_weights,
+        "source": _feedback_weights_source,
+    }
+
+
+def reload_feedback_weights():
+    """Force reload weights from disk (after retraining)."""
+    _load_feedback_weights()
+    return get_active_weights()
+
+
+# Auto-load on module import
+_load_feedback_weights()
 
 
 # ============================================================
@@ -678,22 +737,29 @@ def calculate_optimal_team_sizes(total_students: int, target_size: int) -> List[
 
 
 def calculate_student_overall_score(profile: Dict) -> float:
-    """Calculate an overall strength score for a student."""
+    """Calculate an overall strength score for a student using learned weights."""
     max_skill = max(profile["skills"].values()) if profile["skills"] else 0
     exp_score = profile["experience_score"] / 5.0
     diversity = profile["skill_diversity"]
-    overall = 0.5 * (max_skill / 10.0) + 0.35 * exp_score + 0.15 * diversity
+    
+    # Use feedback-trained weights (or defaults if not trained)
+    w_skill = WEIGHT_SKILL / (WEIGHT_SKILL + WEIGHT_EXPERIENCE + WEIGHT_DIVERSITY)
+    w_exp = WEIGHT_EXPERIENCE / (WEIGHT_SKILL + WEIGHT_EXPERIENCE + WEIGHT_DIVERSITY)
+    w_div = WEIGHT_DIVERSITY / (WEIGHT_SKILL + WEIGHT_EXPERIENCE + WEIGHT_DIVERSITY)
+    
+    overall = w_skill * (max_skill / 10.0) + w_exp * exp_score + w_div * diversity
     return round(overall, 4)
 
 
 def _calculate_team_balance(team: Dict) -> Dict:
-    """Calculate balance metrics for a team."""
+    """Calculate balance metrics with feedback-enhanced scoring."""
     if not team["members"]:
         return {
             "average_score": 0,
             "score_variance": 0,
             "role_diversity": 0,
-            "overall_balance": 0
+            "overall_balance": 0,
+            "weights_source": _feedback_weights_source,
         }
 
     scores = [m["overall_score"] for m in team["members"]]
@@ -703,17 +769,29 @@ def _calculate_team_balance(team: Dict) -> Dict:
     unique_roles = len(team.get("roles_filled", set()))
     role_diversity = unique_roles / len(team["members"])
 
-    balance = (
-        0.35 * avg +
-        0.35 * (1 - min(variance * 10, 1)) +
-        0.30 * role_diversity
-    )
+    # Use feedback weights for balance calculation
+    if _feedback_weights:
+        w_balance = _feedback_weights.get("weight_balance", 0.15)
+        w_coverage = _feedback_weights.get("weight_coverage", 0.20)
+        # Penalize high variance more if model says balance matters
+        balance = (
+            0.30 * avg +
+            (0.25 + w_balance) * (1 - min(variance * 10, 1)) +
+            (0.25 + w_coverage * 0.5) * role_diversity
+        )
+    else:
+        balance = (
+            0.35 * avg +
+            0.35 * (1 - min(variance * 10, 1)) +
+            0.30 * role_diversity
+        )
 
     return {
         "average_score": round(avg, 3),
         "score_variance": round(variance, 4),
         "role_diversity": round(role_diversity, 2),
         "overall_balance": round(balance, 3),
+        "weights_source": _feedback_weights_source,
     }
 
 
