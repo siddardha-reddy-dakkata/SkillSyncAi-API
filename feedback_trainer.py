@@ -277,6 +277,7 @@ class FeedbackModel:
         self.learned_weights = {}
         self.training_metrics = {}
         self.is_trained = False
+        self.keep_indices = None
     
     def train(self, training_data_path: str = None) -> Dict:
         """
@@ -723,8 +724,13 @@ class FeedbackModel:
         }
         
         if self.model is not None and hasattr(self, 'scaler'):
+            # Apply keep_indices if model uses pruned features (v3.x)
+            model_features = features
+            if hasattr(self, 'keep_indices') and self.keep_indices is not None:
+                model_features = features[self.keep_indices]
+            
             # sklearn prediction
-            X = self.scaler.transform(features.reshape(1, -1))
+            X = self.scaler.transform(model_features.reshape(1, -1))
             prob = self.model.predict_proba(X)[0]
             prediction = int(self.model.predict(X)[0])
             
@@ -867,6 +873,10 @@ class FeedbackModel:
             "feature_names": self.feature_extractor.feature_names,
         }
         
+        # Preserve keep_indices if model uses pruned features
+        if hasattr(self, 'keep_indices') and self.keep_indices is not None:
+            save_data["keep_indices"] = self.keep_indices
+        
         # Save sklearn model if available
         if self.model is not None:
             save_data["model"] = self.model
@@ -886,7 +896,7 @@ class FeedbackModel:
             json.dump(report, f, indent=2, default=str)
     
     def load_model(self) -> bool:
-        """Load trained model from disk (compatible with v1 and v2 formats)."""
+        """Load trained model from disk (compatible with v1, v2, and v3 formats)."""
         if not os.path.exists(MODEL_WEIGHTS_PATH):
             print(f"No trained model found at {MODEL_WEIGHTS_PATH}")
             return False
@@ -904,6 +914,9 @@ class FeedbackModel:
                 self.model = save_data["model"]
                 self.scaler = save_data["scaler"]
             
+            # Load keep_indices for v3.x models with pruned features
+            self.keep_indices = save_data.get("keep_indices", None)
+            
             # Detect model version from saved feature names
             saved_features = save_data.get("feature_names", [])
             n_saved = len(saved_features)
@@ -913,7 +926,9 @@ class FeedbackModel:
             print(f"Model loaded from {MODEL_WEIGHTS_PATH}")
             print(f"  Version: {version}  |  Features: {n_saved} saved / {n_current} current")
             
-            if n_saved != n_current and n_saved > 0:
+            if self.keep_indices is not None:
+                print(f"  Using {len(self.keep_indices)} pruned features (keep_indices loaded)")
+            elif n_saved != n_current and n_saved > 0:
                 print(f"  ⚠️  Feature count mismatch ({n_saved} vs {n_current}). "
                       f"Model may need retraining.")
             

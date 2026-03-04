@@ -1,10 +1,10 @@
 {
   "metadata": {
-    "total_records": 408,
+    "total_records": 409,
     "original_count": 257,
     "resume_augmented_count": 150,
     "includes_resume_data": true,
-    "success_count": 290,
+    "success_count": 291,
     "failure_count": 118
   },
   "team_records": [
@@ -25164,6 +25164,34 @@
         "score": 88.5,
         "completion_status": "completed_on_time",
         "notes": "Excellent collaboration"
+      }
+    },
+    {
+      "team_id": "v33_test",
+      "project": {
+        "project_type": "web_application",
+        "project_name": "",
+        "required_skills": [
+          "React"
+        ]
+      },
+      "members": [
+        {
+          "name": "T",
+          "skills": {
+            "React": 7
+          },
+          "experience_years": 2,
+          "assigned_role": "frontend",
+          "skill_level": 7
+        }
+      ],
+      "outcome": {
+        "success": true,
+        "grade": "B",
+        "score": 75.0,
+        "completion_status": "completed",
+        "notes": ""
       }
     }
   ]

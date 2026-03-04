@@ -974,12 +974,28 @@ async def predict_team_success(request: TeamPredictionRequest):
     try:
         model = FeedbackModel()
         
+        # Normalize members: compute skill_level from skills dict if missing
+        normalized_members = []
+        for m in request.members:
+            member = dict(m)
+            if "skill_level" not in member and "skills" in member:
+                skills = member["skills"]
+                if isinstance(skills, dict) and skills:
+                    member["skill_level"] = sum(skills.values()) / len(skills)
+                elif isinstance(skills, list):
+                    member["skill_level"] = 5.0  # default if skills is a list of names
+                else:
+                    member["skill_level"] = 5.0
+            elif "skill_level" not in member:
+                member["skill_level"] = 5.0
+            normalized_members.append(member)
+        
         team_record = {
             "project": {
                 "project_type": request.project_type,
                 "required_skills": request.required_skills,
             },
-            "members": request.members,
+            "members": normalized_members,
         }
         
         result = model.predict_success(team_record)
