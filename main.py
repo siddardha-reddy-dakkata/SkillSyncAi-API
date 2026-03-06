@@ -31,6 +31,7 @@ from feedback_trainer import FeedbackModel, FeedbackEnhancedScorer
 
 KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL", "")  # Set by Render automatically
 KEEP_ALIVE_INTERVAL = 14 * 60  # 14 minutes (Render sleeps after 15 mins)
+DEFAULT_TEAM_SIZE = int(os.getenv("DEFAULT_TEAM_SIZE", "4"))  # Fallback team size
 
 
 async def keep_alive_task():
@@ -622,6 +623,7 @@ async def form_teams_v2(
     resumes: List[UploadFile] = File(..., description="Participant resume PDFs (order must match participantData)"),
     projects: str = Form(..., description="JSON array of projects"),
     participantData: str = Form(..., description="JSON array of participant info"),
+    team_size: Optional[int] = Form(None, description="Target team size (default: auto-calculated from participants/projects)"),
 ):
     """
     Form teams with structured participant and project data.
@@ -663,6 +665,9 @@ async def form_teams_v2(
     - resumes[0] belongs to participantData[0]
     - resumes[1] belongs to participantData[1]
     - etc.
+    
+    **Optional:**
+    - `team_size`: Target team size (priority: request param > DEFAULT_TEAM_SIZE env var > 4)
     
     **Response:** Teams with original participantId, participantName, and projectId preserved.
     """
@@ -748,7 +753,7 @@ async def form_teams_v2(
             internal_projects.append({
                 "name": project_name,
                 "description": requirements,
-                "team_size": max(1, len(participants_list) // max(len(projects_list), 1)),
+                "team_size": team_size if team_size else DEFAULT_TEAM_SIZE,
             })
             
             project_map[idx] = {
@@ -756,11 +761,8 @@ async def form_teams_v2(
                 "project_name": project_name,
             }
         
-        # Calculate team size based on participants and projects
-        if internal_projects:
-            target_team_size = max(2, len(participants_list) // len(internal_projects))
-        else:
-            target_team_size = 4
+        # Use provided team_size, else fall back to env DEFAULT_TEAM_SIZE (default 4)
+        target_team_size = team_size if team_size else DEFAULT_TEAM_SIZE
         
         # Process team formation
         result = process_team_formation(
